@@ -16,7 +16,26 @@
 
 ## 📌 Overview
 
-**CyberMAP** is a full-stack, AI-powered web application that automates cybersecurity maturity assessments for large enterprises. The platform maps **194 security controls** to **NIST Cybersecurity Framework 2.0** and **ISO/IEC 27001:2022** simultaneously. Using a **Gradient Boosting ML classifier** with **96.6% accuracy**, it automatically classifies organisational risk and generates gap analysis, compliance reports and remediation plans.
+**CyberMAP** is a full-stack, AI-powered web application that automates
+cybersecurity maturity assessments for large enterprises.
+
+In today's rapidly evolving threat landscape, organisations face increasing
+pressure to demonstrate a measurable and evidence-based security posture to
+regulators, auditors and board-level stakeholders. Traditional cybersecurity
+assessments are manual, time-consuming and inconsistent — often taking weeks
+to complete and producing results that vary significantly depending on the
+assessor. CyberMAP addresses these challenges by delivering a fully automated,
+intelligent and integrated assessment platform.
+
+The platform maps **194 security controls** simultaneously to:
+- ✅ **NIST Cybersecurity Framework 2.0 (CSF 2.0)**
+- ✅ **ISO/IEC 27001:2022**
+
+Using a **Gradient Boosting ML classifier** with **96.6% cross-validation
+accuracy**, CyberMAP automatically classifies organisational risk as Critical,
+High, Medium or Low and generates automated gap analysis, compliance reports,
+remediation plans and executive scorecards — all within a single thirty-minute
+assessment session.
 
 ---
 
@@ -38,7 +57,49 @@
 
 ---
 
+## 🏗️ System Architecture
+
+CyberMAP follows a clean **five-layer architecture** where each layer has a
+single well-defined responsibility and communicates only with adjacent layers.
+This separation ensures that changes to one layer — for example replacing the
+ML model — do not affect the UI or database layers.
+
+    ┌─────────────────────────────────────┐
+    │        PRESENTATION LAYER           │
+    │         11 Streamlit Pages          │
+    └──────────────┬──────────────────────┘
+                   │
+    ┌──────────────▼──────────────────────┐
+    │        APPLICATION LAYER            │
+    │        app.py + auth.py             │
+    │   Login │ Sessions │ Role Routing   │
+    └──────────────┬──────────────────────┘
+                   │
+    ┌──────────────▼──────────────────────┐
+    │        PROCESSING LAYER             │
+    │           scoring.py                │
+    │  Weighted Scoring │ Gap Analysis    │
+    └──────────────┬──────────────────────┘
+                   │
+    ┌──────────────▼──────────────────────┐
+    │        INTELLIGENCE LAYER           │
+    │          ml_model.py                │
+    │  GradientBoosting Risk Classifier   │
+    └──────────────┬──────────────────────┘
+                   │
+    ┌──────────────▼──────────────────────┐
+    │           DATA LAYER                │
+    │    database.py + cybermap.db        │
+    │       SQLite Persistent Storage     │
+    └─────────────────────────────────────┘
+
+---
+
 ## 🛠️ Tech Stack
+
+CyberMAP is built entirely using free and open-source tools, requiring
+no software licensing investment. The complete platform can be deployed
+on any standard development machine without specialised infrastructure.
 
 | Component | Technology |
 |---|---|
@@ -74,9 +135,18 @@
 
 **5. Open browser at** http://localhost:8501
 
+> On first launch, CyberMAP automatically creates the SQLite database,
+> seeds all 194 questions and trains the ML model. This takes approximately
+> 30 seconds and only happens once.
+
 ---
 
 ## 🔐 Login Accounts
+
+Three role levels are available, each with distinct page access permissions.
+The Administrator role has full access to all 11 pages and all platform
+features. The Assessor role can run assessments and access all analysis pages.
+The Viewer role provides read-only access to dashboard, results and history.
 
 | Username | Password | Role | Access |
 |---|---|---|---|
@@ -87,6 +157,10 @@
 ---
 
 ## 📊 Platform Pages
+
+CyberMAP delivers 13 integrated feature modules across 11 pages, covering
+the complete cybersecurity assessment lifecycle from data collection through
+to board-level reporting.
 
 | No | Page | Feature |
 |---|---|---|
@@ -104,40 +178,14 @@
 
 ---
 
-## 🏗️ System Architecture
-
-    ┌─────────────────────────────────────┐
-    │        PRESENTATION LAYER           │
-    │         11 Streamlit Pages          │
-    └──────────────┬──────────────────────┘
-                   │
-    ┌──────────────▼──────────────────────┐
-    │        APPLICATION LAYER            │
-    │        app.py + auth.py             │
-    │   Login │ Sessions │ Role Routing   │
-    └──────────────┬──────────────────────┘
-                   │
-    ┌──────────────▼──────────────────────┐
-    │        PROCESSING LAYER             │
-    │           scoring.py                │
-    │  Weighted Scoring │ Gap Analysis    │
-    └──────────────┬──────────────────────┘
-                   │
-    ┌──────────────▼──────────────────────┐
-    │        INTELLIGENCE LAYER           │
-    │          ml_model.py                │
-    │  GradientBoosting Risk Classifier   │
-    └──────────────┬──────────────────────┘
-                   │
-    ┌──────────────▼──────────────────────┐
-    │           DATA LAYER                │
-    │    database.py + cybermap.db        │
-    │       SQLite Persistent Storage     │
-    └─────────────────────────────────────┘
-
----
-
 ## 🧠 ML Model
+
+The risk classification model uses a **Gradient Boosting Classifier**
+trained on 1,200 synthetic organisational profiles. The model takes six
+domain maturity scores as input and predicts the overall risk level with
+a quantified confidence percentage. This eliminates the subjectivity of
+manual risk judgment and produces consistent, reproducible results across
+every assessment.
 
 | Parameter | Value |
 |---|---|
@@ -153,6 +201,11 @@
 
 ## 📋 NIST CSF 2.0 Coverage
 
+The 194 assessment questions are distributed across all six NIST CSF 2.0
+functions. Each question is individually tagged with a NIST subcategory
+reference code and an ISO/IEC 27001:2022 clause, enabling a single
+assessment to satisfy both frameworks simultaneously.
+
 | Domain | Function | Questions | Focus Area |
 |---|---|---|---|
 | Govern | GV | 35 | Policy, roles, risk strategy |
@@ -167,12 +220,18 @@
 
 ## 📈 Maturity Scoring Formula
 
+The weighted scoring formula ensures that more critical controls
+(such as MFA enforcement) have a proportionally greater influence
+on the domain score than lower-priority controls.
+
     Domain Score = (Σ answer × weight) / (Σ 5.0 × weight) × 5.0
 
-    Gap Severity Classification:
-    Critical  →  Score 0.0 – 1.0  →  Days 1–7   (Immediate)
-    High      →  Score 1.0 – 2.0  →  Days 8–30  (Short-term)
-    Medium    →  Score 2.0 – 3.0  →  Days 31–90 (Medium-term)
+    Overall Score = Arithmetic mean of all 6 domain scores
+
+    Gap Severity:
+    Critical  →  Score 0.0 – 1.0  →  Days 1–7   (Immediate action)
+    High      →  Score 1.0 – 2.0  →  Days 8–30  (Short-term action)
+    Medium    →  Score 2.0 – 3.0  →  Days 31–90 (Medium-term action)
 
 ---
 
