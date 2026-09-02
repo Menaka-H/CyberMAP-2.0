@@ -1,0 +1,12 @@
+﻿venv/
+data/cybermap.db
+models/risk_classifier.pkl
+models/scaler.pkl
+reports/*.pdf
+__pycache__/
+*.pyc
+.vscode/
+.env
+CyberMAP_ScanReport_*.json
+incoming_scans/*.json
+scheduled_scan_log.txt

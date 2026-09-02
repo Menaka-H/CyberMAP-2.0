@@ -1,4 +1,4 @@
-# app.py — CyberMAP v3.0 with all advanced features
+﻿# app.py - CyberMAP v3.0 with all advanced features + CyberMAP 2.0 extensions
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -10,7 +10,7 @@ from utils.auth import require_login, has_permission, get_current_role, ROLE_PER
 
 st.set_page_config(
     page_title="CyberMAP",
-    page_icon="🛡️",
+    page_icon=":shield:",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -44,25 +44,21 @@ def bootstrap():
 bootstrap()
 require_login()
 
-# ── Handle Start Assessment button redirect ───────────────────────────────────
-# This must come BEFORE the sidebar radio widget is created
 if st.session_state.get("go_to_assessment"):
     del st.session_state["go_to_assessment"]
-    st.session_state["_default_nav"] = "📋 New Assessment"
+    st.session_state["_default_nav"] = "New Assessment"
 
-# Set default nav index
 default_nav = st.session_state.pop("_default_nav", None)
 
-# ── Role badge ────────────────────────────────────────────────────────────────
 role      = get_current_role()
 role_info = ROLE_PERMISSIONS.get(role, {})
 
 with st.sidebar:
-    st.markdown("## 🛡️ CyberMAP")
+    st.markdown("## CyberMAP")
     st.markdown(f"""
     <div style="margin-bottom:8px;">
         <div style="color:#e2e8f0;font-size:0.95rem;font-weight:600;">
-            👤 {st.session_state.get('name', 'User')}
+            {st.session_state.get('name', 'User')}
         </div>
         <span style="background:{role_info.get('color','#6b7280')}22;
                      color:{role_info.get('color','#6b7280')};
@@ -74,26 +70,27 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     st.markdown("---")
 
-    # Build menu based on role permissions
-    menu_items = ["🏠 Dashboard"]
+    menu_items = ["Dashboard"]
 
     if has_permission("can_assess"):
-        menu_items.append("📋 New Assessment")
+        menu_items.append("New Assessment")
 
-    menu_items += ["📊 Results & Analysis", "📁 History"]
+    menu_items += ["Results & Analysis", "History"]
 
     if has_permission("can_view"):
         menu_items += [
-            "🤖 AI Advisor",
-            "💥 Attack Simulation",
-            "📈 Benchmarking",
-            "✅ Compliance Checker",
-            "🗺️ Remediation Roadmap",
-            "📋 Executive Scorecard",
-            "🏗️ Security Builder",
+            "AI Advisor",
+            "Attack Simulation",
+            "Benchmarking",
+            "Compliance Checker",
+            "Remediation Roadmap",
+            "Executive Scorecard",
+            "Security Builder",
+            "Fleet Import",
+            "Continuous Monitoring",
+            "Policy Gap Analyzer",
         ]
 
-    # Use default_nav index if redirecting from dashboard button
     nav_index = 0
     if default_nav and default_nav in menu_items:
         nav_index = menu_items.index(default_nav)
@@ -102,37 +99,42 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Frameworks**")
-    st.markdown("• NIST CSF 2.0")
-    st.markdown("• ISO/IEC 27001:2022")
+    st.markdown("- NIST CSF 2.0")
+    st.markdown("- ISO/IEC 27001:2022")
     st.markdown("---")
 
-    if st.button("🚪 Logout", use_container_width=True):
+    if st.button("Logout", use_container_width=True):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
 
     st.caption("CyberMAP v3.0 | M.Tech Capstone")
 
-# ── Page routing ──────────────────────────────────────────────────────────────
-if page == "🏠 Dashboard":
+if page == "Dashboard":
     from pg_dashboard import render; render()
-elif page == "📋 New Assessment":
+elif page == "New Assessment":
     from pg_assessment import render; render()
-elif page == "📊 Results & Analysis":
+elif page == "Results & Analysis":
     from pg_results import render; render()
-elif page == "📁 History":
+elif page == "History":
     from pg_history import render; render()
-elif page == "🤖 AI Advisor":
+elif page == "AI Advisor":
     from pg_chatbot import render; render()
-elif page == "💥 Attack Simulation":
+elif page == "Attack Simulation":
     from pg_simulation import render; render()
-elif page == "📈 Benchmarking":
+elif page == "Benchmarking":
     from pg_benchmarking import render; render()
-elif page == "✅ Compliance Checker":
+elif page == "Compliance Checker":
     from pg_compliance import render; render()
-elif page == "🗺️ Remediation Roadmap":
+elif page == "Remediation Roadmap":
     from pg_roadmap import render; render()
-elif page == "📋 Executive Scorecard":
+elif page == "Executive Scorecard":
     from pg_scorecard import render; render()
-elif page == "🏗️ Security Builder":
+elif page == "Security Builder":
     from pg_security_builder import render; render()
+elif page == "Fleet Import":
+    from pg_fleet_import import render; render()
+elif page == "Continuous Monitoring":
+    from pg_monitoring import render; render()
+elif page == "Policy Gap Analyzer":
+    from pg_policy_analyzer import render; render()

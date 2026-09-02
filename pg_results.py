@@ -5,8 +5,10 @@ import streamlit as st
 import pandas as pd
 from utils.database import get_assessment_by_id, get_all_assessments, get_questions
 from utils.scoring import get_maturity_label, compute_domain_scores, identify_gaps, build_feature_vector
-from utils.ml_model import predict_risk, get_risk_color, get_risk_emoji, RISK_EMOJIS
+from utils.ml_model import predict_risk, get_risk_color, get_risk_emoji, RISK_EMOJIS, explain_prediction
 from utils.questions_data import DOMAINS
+from utils.remediation import get_remediation_suggestion, log_remediation_decision, execute_remediation, re_verify_fix
+from utils.vulnerability_mapping import search_cves_for_gap, NIST_REF_TO_KEYWORD
 
 def render():
     st.title("📊 Assessment Results & Analysis")
@@ -72,6 +74,9 @@ def render():
     st.markdown("### 📄 Download PDF Report")
     try:
         from utils.report_gen import generate_pdf_report
+        from utils.prioritization import prioritize_gaps
+        from utils.database import get_all_evidence
+
         assessment_data = {
             "org_name":      org_name,
             "assessor":      assessor,
@@ -79,7 +84,47 @@ def render():
             "risk_level":    risk_level,
             "gaps":          gaps if isinstance(gaps, list) else [],
         }
-        pdf_bytes = generate_pdf_report(assessment_data, domain_scores)
+
+        evidence_summary = None
+        try:
+            all_evidence = get_all_evidence(assessment_id=aid)
+            eligible_count = sum(
+                1 for d in domain_scores.values()
+                if isinstance(d, dict)
+            )
+            evidence_summary = {
+                "total_eligible": eligible_count if eligible_count else 40,
+                "with_evidence": len(all_evidence),
+                "coverage_pct": round(
+                    (len(all_evidence) / (eligible_count if eligible_count else 40)) * 100, 1
+                ) if all_evidence else 0.0,
+            }
+        except Exception:
+            evidence_summary = None
+
+        shap_explanation = None
+        try:
+            feature_vec_for_pdf = [
+                domain_scores.get(d, {}).get("score", 0) for d in DOMAINS
+            ]
+            shap_explanation = explain_prediction(feature_vec_for_pdf)
+        except Exception:
+            shap_explanation = None
+
+        priority_gaps = None
+        try:
+            if isinstance(gaps, list) and gaps:
+                priority_gaps = prioritize_gaps(gaps)
+        except Exception:
+            priority_gaps = None
+
+        pdf_bytes = generate_pdf_report(
+            assessment_data,
+            domain_scores,
+            evidence_summary=evidence_summary,
+            shap_explanation=shap_explanation,
+            priority_gaps=priority_gaps,
+        )
         st.download_button(
             label="⬇️ Download PDF Report",
             data=pdf_bytes,
@@ -113,7 +158,6 @@ def render():
             st.subheader("🕸️ Domain Radar")
             st.plotly_chart(radar_chart(domain_scores), use_container_width=True)
 
-        # ── Bar chart ─────────────────────────────────────────────────
         st.subheader("📊 Domain Scores")
         st.plotly_chart(bar_chart(domain_scores), use_container_width=True)
     except Exception as e:
@@ -161,12 +205,6 @@ def render():
         st.markdown("**Probability Breakdown**")
         for lvl in ["Critical", "High", "Medium", "Low"]:
             pct = probs.get(lvl, 0)
-            bar_col = {
-                "Critical": "#dc2626",
-                "High":     "#f59e0b",
-                "Medium":   "#fbbf24",
-                "Low":      "#16a34a",
-            }.get(lvl, "#6b7280")
             st.markdown(f"**{lvl}**")
             st.progress(pct / 100)
 
@@ -175,6 +213,235 @@ def render():
             st.plotly_chart(risk_donut(probs), use_container_width=True)
         except:
             pass
+
+    # ── Explainable AI — Why this risk level? (CyberMAP 2.0) ───────────
+    st.markdown("#### 🧠 Why This Risk Level? (Explainable AI)")
+    with st.spinner("Computing SHAP explanation..."):
+        try:
+            feature_vec_for_explain = [
+                domain_scores.get(d, {}).get("score", 0) for d in DOMAINS
+            ]
+            explanation = explain_prediction(feature_vec_for_explain)
+
+            st.markdown(f"""
+            <div style="background:#0f172a;border-left:4px solid #8b5cf6;
+                        border-radius:8px;padding:14px 18px;margin-bottom:12px;">
+                <p style="color:#e2e8f0;margin:0;font-size:0.95rem;line-height:1.5;">
+                    {explanation['explanation_text']}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("**Domain Contribution to This Prediction**")
+            st.caption(
+                "Positive values pushed the prediction toward the "
+                f"'{explanation['predicted_class']}' class. "
+                "Negative values pushed away from it."
+            )
+
+            contrib = explanation["domain_contributions"]
+            for domain in DOMAINS:
+                val = contrib.get(domain, 0)
+                bar_color = "#ef4444" if val < 0 else "#22c55e"
+                bar_width = min(abs(val) * 200, 100)
+                direction = "◀" if val < 0 else "▶"
+                col_label, col_bar = st.columns([1, 3])
+                with col_label:
+                    st.markdown(f"**{domain}**")
+                with col_bar:
+                    st.markdown(f"""
+                    <div style="background:#1e293b;border-radius:4px;
+                                height:20px;position:relative;overflow:hidden;
+                                display:flex;align-items:center;">
+                        <div style="width:{bar_width}%;height:100%;
+                                    background:{bar_color};border-radius:4px;">
+                        </div>
+                        <span style="position:absolute;left:8px;color:#e2e8f0;
+                                     font-size:0.75rem;">
+                            {direction} {val:+.3f}
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+        except Exception as e:
+            st.warning(f"Could not generate SHAP explanation: {e}")
+
+    st.markdown("---")
+
+    # ── Human-in-the-Loop Remediation (CyberMAP 2.0) ────────────────────
+    st.markdown("#### 🛠️ Suggested Remediation (Human Approval Required)")
+    st.caption(
+        "For reversible fixes, you may execute the command directly after "
+        "explicit two-step confirmation — nothing runs on a single click. "
+        "Non-reversible fixes (e.g. disk encryption) only support logging "
+        "an approval decision, never automatic execution."
+    )
+
+    if isinstance(gaps, list):
+        remediable_gaps = []
+        for g in gaps[:20]:
+            suggestion = get_remediation_suggestion(g.get("nist_ref", ""))
+            if suggestion:
+                remediable_gaps.append((g, suggestion))
+
+        if remediable_gaps:
+            for idx, (g, suggestion) in enumerate(remediable_gaps[:3]):
+                with st.expander(f"{g['domain']} — {suggestion['fix']}"):
+                    st.markdown(f"**Gap:** {g['question']}")
+                    st.markdown(f"**NIST Ref:** `{g['nist_ref']}`")
+                    st.markdown(f"**Proposed Fix:** {suggestion['fix']}")
+                    st.code(suggestion['command'], language="powershell")
+                    reversible_text = "Reversible" if suggestion['reversible'] else "Not easily reversible"
+                    st.caption(f"Risk level: {reversible_text}")
+
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        if st.button("📝 Log Approval Only", key=f"approve_{idx}"):
+                            log_remediation_decision(
+                                gap_question=g["question"],
+                                nist_ref=g["nist_ref"],
+                                proposed_fix=suggestion["fix"],
+                                command_preview=suggestion["command"],
+                                approved_by=assessor,
+                                status="Approved (Not Executed)",
+                            )
+                            st.success("Approval logged. Not executed.")
+
+                    with col_b:
+                        if suggestion.get("reversible", False):
+                            if st.button("⚡ Execute Now", key=f"execute_{idx}"):
+                                st.session_state[f"confirm_exec_{idx}"] = True
+
+                    with col_c:
+                        if st.button("❌ Reject", key=f"reject_{idx}"):
+                            log_remediation_decision(
+                                gap_question=g["question"],
+                                nist_ref=g["nist_ref"],
+                                proposed_fix=suggestion["fix"],
+                                command_preview=suggestion["command"],
+                                approved_by=assessor,
+                                status="Rejected",
+                            )
+                            st.info("Rejection logged.")
+
+                    if st.session_state.get(f"confirm_exec_{idx}"):
+                        st.warning(
+                            f"⚠️ This will actually run the following command "
+                            f"on THIS machine right now:\n\n`{suggestion['command']}`\n\n"
+                            f"Confirm you want to proceed."
+                        )
+                        conf_a, conf_b = st.columns(2)
+                        with conf_a:
+                            if st.button("✅ Yes, execute", key=f"conf_yes_{idx}"):
+                                with st.spinner("Executing fix..."):
+                                    exec_result = execute_remediation(g["nist_ref"], suggestion["command"])
+
+                                if exec_result["success"]:
+                                    st.success(f"✅ Executed successfully.")
+                                    if exec_result["output"]:
+                                        st.code(exec_result["output"])
+
+                                    with st.spinner("Re-verifying with a targeted re-scan..."):
+                                        recheck = re_verify_fix(g["nist_ref"])
+                                    if recheck:
+                                        recheck_color = "green" if recheck["status"] == "PASS" else "orange"
+                                        st.info(f"Re-scan result for {recheck['check']}: **{recheck['status']}**")
+
+                                    log_remediation_decision(
+                                        gap_question=g["question"],
+                                        nist_ref=g["nist_ref"],
+                                        proposed_fix=suggestion["fix"],
+                                        command_preview=suggestion["command"],
+                                        approved_by=assessor,
+                                        status="Approved and Executed",
+                                    )
+                                else:
+                                    st.error(f"❌ Execution failed: {exec_result['error']}")
+                                    log_remediation_decision(
+                                        gap_question=g["question"],
+                                        nist_ref=g["nist_ref"],
+                                        proposed_fix=suggestion["fix"],
+                                        command_preview=suggestion["command"],
+                                        approved_by=assessor,
+                                        status="Execution Failed",
+                                    )
+                                st.session_state[f"confirm_exec_{idx}"] = False
+
+                        with conf_b:
+                            if st.button("Cancel", key=f"conf_no_{idx}"):
+                                st.session_state[f"confirm_exec_{idx}"] = False
+                                st.info("Execution cancelled.")
+        else:
+            st.caption("No automated remediation suggestions available for the current gaps.")
+
+    st.markdown("---")
+
+    # ── Vulnerability-to-Maturity Mapping (CyberMAP 2.0) ────────────────
+    st.markdown("#### 🌐 Related Known Vulnerabilities (Live CVE Lookup)")
+    st.caption(
+        "Connects specific assessment gaps to real, currently known "
+        "vulnerabilities from the NIST National Vulnerability Database, "
+        "adding concrete threat context to abstract maturity scores. "
+        "If the live database is unreachable, a small set of cached "
+        "illustrative examples is shown instead, clearly labelled."
+    )
+
+    if isinstance(gaps, list):
+        mappable_gaps = []
+        seen_refs = set()
+        for g in gaps:
+            ref = g.get("nist_ref", "")
+            if ref in NIST_REF_TO_KEYWORD and ref not in seen_refs:
+                mappable_gaps.append(g)
+                seen_refs.add(ref)
+
+        if mappable_gaps:
+            for idx, g in enumerate(mappable_gaps[:3]):
+                with st.expander(f"{g['domain']} — {g['question'][:70]}"):
+                    with st.spinner("Searching NVD for related CVEs..."):
+                        cve_result = search_cves_for_gap(g["nist_ref"])
+
+                    if cve_result["source"] == "live":
+                        st.success(
+                            f"🌐 Live results from NVD — search term: "
+                            f"'{cve_result['keyword_used']}'"
+                        )
+                    elif cve_result["source"] == "cache-db":
+                        age = cve_result.get("age_hours", "?")
+                        st.info(
+                            f"⚡ Loaded from cache (queried {age} hours ago) — "
+                            f"faster than a live lookup, same real data."
+                        )
+                    elif cve_result["source"] == "cached":
+                        st.warning(
+                            "⚠️ Live NVD lookup unavailable — showing "
+                            "cached illustrative examples instead."
+                        )
+                    else:
+                        st.info("No CVE mapping available for this control type.")
+
+                    for cve in cve_result["cves"]:
+                        sev_color = {
+                            "CRITICAL": "#dc2626", "Critical": "#dc2626",
+                            "HIGH": "#f59e0b", "High": "#f59e0b",
+                            "MEDIUM": "#fbbf24", "Medium": "#fbbf24",
+                        }.get(cve["severity"], "#6b7280")
+                        st.markdown(f"""
+                        <div style="background:#0f172a;border-left:3px solid {sev_color};
+                                    border-radius:6px;padding:10px 14px;margin-bottom:6px;">
+                            <span style="color:{sev_color};font-weight:700;">
+                                {cve['id']}
+                            </span>
+                            <span style="color:#64748b;font-size:0.78rem;margin-left:8px;">
+                                {cve['severity']}
+                            </span>
+                            <p style="color:#94a3b8;margin:6px 0 0 0;font-size:0.85rem;">
+                                {cve['description']}
+                            </p>
+                        </div>
+                        """, unsafe_allow_html=True)
+        else:
+            st.caption("No gaps in this assessment have a defined CVE search mapping.")
 
     st.markdown("---")
 

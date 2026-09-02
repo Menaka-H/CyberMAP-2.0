@@ -5,7 +5,8 @@ from collections import defaultdict
 from utils.questions_data import (
     DOMAINS,
     DOMAIN_DESCRIPTIONS,
-    RECOMMENDATIONS
+    RECOMMENDATIONS,
+    SUBDOMAIN_RECOMMENDATIONS,
 )
 
 
@@ -180,24 +181,44 @@ def identify_gaps(answers, questions, threshold=3):
 def _get_recommendation(q):
     """
     Find the best recommendation for a gap.
-    Looks up the domain's recommendation list.
-    Private function (only used inside this file).
+
+    The base recommendation is still looked up at the (domain,
+    subdomain) level, since the underlying fix genuinely is the same
+    for every control in that subdomain (e.g. "have a documented
+    policy"). To avoid identical text repeating verbatim across
+    multiple gaps in the same subdomain, the specific control being
+    asked about is appended as a second sentence, so each gap reads
+    distinctly even when the core guidance is shared.
     """
-    domain_recs = RECOMMENDATIONS.get(q["domain"], [])
+    domain    = q["domain"]
+    subdomain = q.get("subdomain", "")
+    question  = q.get("question", "").strip()
 
-    if not domain_recs:
-        return "Review and strengthen this control."
+    def specific_clause(question_text):
+        if not question_text:
+            return ""
+        text = question_text.rstrip("?").strip()
+        if text:
+            text = text[0].lower() + text[1:]
+        return f" Specifically, address: {text}."
 
-    # Try to match by subdomain keyword
-    subdomain_lower = q.get("subdomain", "").lower()
-    for rec in domain_recs:
-        # Check if any word from the subdomain appears in the recommendation
-        for word in subdomain_lower.split():
-            if len(word) > 3 and word in rec.lower():
-                return rec
+    # 1. Specific subdomain match — this now covers all real subdomains
+    base = SUBDOMAIN_RECOMMENDATIONS.get((domain, subdomain))
+    if base:
+        return base + specific_clause(question)
 
-    # If no match found, return the first recommendation for that domain
-    return domain_recs[0]
+    # 2. Old domain-level fallback with keyword matching
+    domain_recs = RECOMMENDATIONS.get(domain, [])
+    if domain_recs:
+        subdomain_lower = subdomain.lower()
+        for rec in domain_recs:
+            for word in subdomain_lower.split():
+                if len(word) > 3 and word in rec.lower():
+                    return rec + specific_clause(question)
+        return domain_recs[0] + specific_clause(question)
+
+    # 3. Final fallback
+    return "Review and strengthen this control." + specific_clause(question)
 
 
 def build_feature_vector(domain_scores):

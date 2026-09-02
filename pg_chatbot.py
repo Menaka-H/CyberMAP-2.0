@@ -1,296 +1,500 @@
-# pages/pg_chatbot.py — AI Security Advisor Chatbot
+# pg_chatbot.py — AI Security Advisor with assessment context
 import streamlit as st
-from utils.database import get_all_assessments, get_assessment_by_id, get_questions
-from utils.scoring import compute_domain_scores, get_maturity_label
-from utils.questions_data import RECOMMENDATIONS, DOMAINS
+from utils.database import get_all_assessments, get_questions
+from utils.scoring import compute_domain_scores, identify_gaps
 
-def get_context(assessment_id=None):
-    """Build context string from latest or selected assessment."""
+def get_assessment_context():
+    """Load latest assessment data and build context string."""
     assessments = get_all_assessments()
     if not assessments:
         return None, None
 
-    if not assessment_id:
-        assessment_id = assessments[0]["id"]
+    latest = assessments[0]
+    questions = get_questions()
 
-    row = get_assessment_by_id(assessment_id)
-    if not row:
-        return None, None
+    # Get domain scores and gaps
+    try:
+        import json
+        answers = json.loads(latest.get("answers_json", "{}"))
+        domain_scores = compute_domain_scores(answers, questions)
+        gaps = identify_gaps(answers, questions, threshold=3)
+    except Exception:
+        domain_scores = {}
+        gaps = []
 
-    qs = get_questions()
-    domain_scores = compute_domain_scores(row["answers"], qs)
-    gaps = row["gaps"]
+    # Build context
+    org      = latest.get("org_name", "Unknown")
+    assessor = latest.get("assessor", "Unknown")
+    score    = latest.get("maturity_score", 0)
+    risk     = latest.get("risk_level", "Unknown")
+
+    # Domain scores text
+    domain_text = ""
+    for d, v in domain_scores.items():
+        s = v.get("score", 0) if isinstance(v, dict) else 0
+        domain_text += f"  - {d}: {s:.2f}/5.00\n"
+
+    # Gap summary
+    crit = [g for g in gaps if g.get("severity") == "Critical"]
+    high = [g for g in gaps if g.get("severity") == "High"]
+    med  = [g for g in gaps if g.get("severity") == "Medium"]
+
+    # Top critical gaps text
+    crit_text = ""
+    for g in crit[:5]:
+        crit_text += f"  - {g.get('question','')[:80]} [{g.get('nist_ref','')}]\n"
+
+    high_text = ""
+    for g in high[:5]:
+        high_text += f"  - {g.get('question','')[:80]} [{g.get('nist_ref','')}]\n"
 
     context = f"""
-You are CyberMAP AI Advisor — an expert cybersecurity analyst assistant.
-You have access to the following assessment results:
-
-ORGANISATION: {row['org_name']}
-ASSESSOR: {row['assessor']}
-OVERALL MATURITY SCORE: {row['maturity_score']:.2f} / 5.00
-RISK LEVEL: {row['risk_level']}
+ASSESSMENT CONTEXT FOR {org}:
+- Assessor: {assessor}
+- Overall Maturity Score: {score:.2f}/5.00
+- AI/ML Risk Level: {risk}
+- Total Gaps Found: {len(gaps)} ({len(crit)} Critical, {len(high)} High, {len(med)} Medium)
 
 DOMAIN SCORES:
-{chr(10).join([f"- {d}: {v['score']:.2f}/5.00 ({get_maturity_label(v['score'])[0]})"
-               for d, v in domain_scores.items()])}
+{domain_text}
 
-TOP GAPS (Critical/High severity):
-{chr(10).join([f"- [{g['severity']}] {g['domain']}: {g['question'][:80]}..."
-               for g in gaps[:10] if g.get('severity') in ['Critical','High']])}
+TOP CRITICAL GAPS (Score 0-1):
+{crit_text if crit_text else "  None"}
 
-FRAMEWORKS: NIST CSF 2.0, ISO/IEC 27001:2022
+TOP HIGH GAPS (Score 1-2):
+{high_text if high_text else "  None"}
 
-Your role:
-- Answer cybersecurity questions based on these results
-- Provide specific, actionable recommendations
-- Explain NIST and ISO controls in simple terms
-- Suggest remediation priorities based on severity
-- Be concise, professional, and practical
-- If asked about topics unrelated to cybersecurity, politely redirect
+SCORE INTERPRETATION:
+- 0.0-1.0 = Initial (no formal controls)
+- 1.0-2.0 = Developing (basic reactive controls)
+- 2.0-3.0 = Defined (documented processes)
+- 3.0-4.0 = Managed (monitored controls)
+- 4.0-5.0 = Optimising (continuously improving)
 """
-    return context, row
+    return context, latest
 
-def get_ai_response(context, user_message, history):
-    """Generate AI response using rule-based logic + templates."""
-    msg = user_message.lower().strip()
+def get_ai_response(user_question, context):
+    """Generate intelligent response based on assessment context."""
 
-    # Score-related questions
-    if any(w in msg for w in ["score", "maturity", "level", "rating"]):
-        return (
-            "Based on your assessment results, I can see your organisation's "
-            "maturity profile across the 6 NIST CSF 2.0 domains. "
-            "Your weakest domains need immediate attention — I recommend focusing "
-            "on controls scoring below 2.0 first, as these represent the highest risk. "
-            "Would you like me to explain what each maturity level means?"
-        )
+    q = user_question.lower()
 
-    if any(w in msg for w in ["risk", "critical", "danger", "threat"]):
-        return (
-            "Your AI-predicted risk level indicates the likelihood of a successful "
-            "cyber attack based on your current control gaps. Critical and High severity "
-            "gaps should be remediated within 30 days. Key immediate actions:\n\n"
-            "1. Enable MFA on all privileged accounts\n"
-            "2. Deploy or verify EDR on all endpoints\n"
-            "3. Ensure critical patches are applied within 30 days\n"
-            "4. Test your incident response plan\n\n"
-            "Which of these would you like me to explain further?"
-        )
-
-    if any(w in msg for w in ["nist", "framework", "csf"]):
-        return (
-            "NIST CSF 2.0 (released February 2024) organises cybersecurity into "
-            "6 functions: **Govern** (new in 2.0), Identify, Protect, Detect, "
-            "Respond, and Recover. Each function contains specific outcomes called "
-            "subcategories. Your assessment maps your controls to these subcategories "
-            "so you can see exactly which NIST requirements you are meeting and which "
-            "you are missing. Which NIST domain would you like to explore?"
-        )
-
-    if any(w in msg for w in ["iso", "27001", "isms"]):
-        return (
-            "ISO/IEC 27001:2022 is the international standard for Information "
-            "Security Management Systems (ISMS). It requires organisations to "
-            "establish, implement, maintain and continually improve security controls. "
-            "Your CyberMAP assessment maps each question to specific ISO clauses "
-            "(Clause 5 through 10 and Annex A controls). "
-            "The most critical ISO controls for your gaps are in Annex A.8 "
-            "(Technological controls). Shall I explain the certification process?"
-        )
-
-    if any(w in msg for w in ["gap", "missing", "weak", "improve"]):
-        return (
-            "Your gap analysis has identified controls that score below 3 (Defined). "
-            "These are prioritised by severity:\n\n"
-            "🔴 **Critical** (score 0-1): Must fix immediately — these represent "
-            "fundamental security failures\n"
-            "🟠 **High** (score 2): Fix within 30 days — significant risk exposure\n"
-            "🟡 **Medium** (score 2-3): Fix within 90 days — notable weaknesses\n\n"
-            "I recommend creating a remediation roadmap with owners and deadlines "
-            "for each gap. Would you like a suggested timeline?"
-        )
-
-    if any(w in msg for w in ["recommend", "advice", "suggest", "next step", "what should"]):
-        return (
-            "Based on your assessment, here are my top 5 recommendations:\n\n"
-            "1. **Enable MFA** on all admin and remote access accounts immediately\n"
-            "2. **Deploy EDR** on any endpoints that lack endpoint protection\n"
-            "3. **Create/update your Incident Response Plan** and test it quarterly\n"
-            "4. **Conduct a formal risk assessment** if you haven't in the last year\n"
-            "5. **Enable centralised logging** (SIEM) to improve detection capability\n\n"
-            "These five actions will have the highest impact on reducing your risk level. "
-            "Which one shall we start with?"
-        )
-
-    if any(w in msg for w in ["mfa", "multi-factor", "authentication", "password"]):
-        return (
-            "Multi-Factor Authentication (MFA) is one of the most impactful security "
-            "controls you can implement. It maps to **NIST PR.AA-03** and **ISO 8.5**. "
-            "Implementation steps:\n\n"
-            "1. Start with admin/privileged accounts (highest priority)\n"
-            "2. Then email and VPN access\n"
-            "3. Use authenticator apps (TOTP) rather than SMS where possible\n"
-            "4. Options: Microsoft Authenticator, Google Authenticator, Duo, Okta\n\n"
-            "MFA alone can prevent 99.9% of account compromise attacks. "
-            "Would you like guidance on choosing an MFA solution?"
-        )
-
-    if any(w in msg for w in ["ransomware", "attack", "breach", "incident"]):
-        return (
-            "Ransomware is the most common devastating attack organisations face today. "
-            "Your CyberMAP controls most relevant to ransomware protection are:\n\n"
-            "**Prevention:** Patch management (PR.PS-02), EDR (PR.PS-04), "
-            "email filtering (DE.CM-04)\n"
-            "**Detection:** SIEM/log monitoring (DE.CM-03), anomaly detection (DE.AE-03)\n"
-            "**Recovery:** Tested backups (PR.DS-11), Incident Response Plan (RS.MA-01), "
-            "Business Continuity Plan (RC.RP-01)\n\n"
-            "The most important control is **immutable, offline backups** — "
-            "ransomware cannot encrypt what it cannot reach."
-        )
-
-    if any(w in msg for w in ["report", "pdf", "download", "export"]):
-        return (
-            "Your full PDF report is available in the **Results & Analysis** page. "
-            "Click the 'Generate PDF Report' button to download it. "
-            "The report includes:\n"
-            "• Executive summary with overall score and risk level\n"
-            "• Domain-by-domain score breakdown\n"
-            "• Full gap analysis table with NIST and ISO references\n"
-            "• Prioritised recommendations for each domain\n\n"
-            "The report is suitable for presenting to senior management or auditors."
-        )
-
-    if any(w in msg for w in ["hello", "hi", "help", "start", "what can you"]):
-        return (
-            "Hello! I'm your CyberMAP AI Security Advisor. I have access to your "
-            "latest assessment results and can help you with:\n\n"
-            "• 📊 **Understanding your scores** — what they mean and how to improve\n"
-            "• 🔍 **Gap analysis** — explaining specific control weaknesses\n"
-            "• 🛡️ **NIST CSF 2.0** — framework guidance and control explanations\n"
-            "• 📋 **ISO 27001** — standard requirements and compliance advice\n"
-            "• 🚨 **Risk reduction** — prioritised action plans\n"
-            "• 💡 **Recommendations** — specific technical remediation steps\n\n"
-            "What would you like to explore first?"
-        )
-
-    # Default intelligent response
-    return (
-        f"That's a great cybersecurity question. Based on your assessment results, "
-        f"I'd recommend looking at your lowest-scoring domains first and focusing on "
-        f"the Critical and High severity gaps identified in your gap analysis. "
-        f"These represent the areas where your organisation is most exposed to risk.\n\n"
-        f"Could you be more specific about what aspect of your security posture "
-        f"you'd like me to help with? For example: specific controls, framework "
-        f"requirements, remediation steps, or risk explanations?"
-    )
-
-def render():
-    st.markdown("""
-    <style>
-    .chat-msg-user {
-        background:#1e3a5f; border-radius:12px 12px 4px 12px;
-        padding:12px 16px; margin:8px 0; margin-left:20%;
-        color:#e2e8f0;
-    }
-    .chat-msg-bot {
-        background:#1e293b; border:1px solid #334155;
-        border-radius:12px 12px 12px 4px;
-        padding:12px 16px; margin:8px 0; margin-right:20%;
-        color:#e2e8f0;
-    }
-    .chat-label-user { color:#60a5fa; font-size:0.8rem; text-align:right; margin-right:4px; }
-    .chat-label-bot  { color:#34d399; font-size:0.8rem; margin-left:4px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown("""
-    <div style="background:linear-gradient(135deg,#1e3a5f,#0f172a);
-                border-radius:14px;padding:24px 28px;margin-bottom:20px;
-                border:1px solid #2563eb44">
-        <h2 style="color:white;margin:0">🤖 AI Security Advisor</h2>
-        <p style="color:#93c5fd;margin:6px 0 0 0">
-            Ask me anything about your cybersecurity assessment results,
-            NIST CSF 2.0, ISO 27001, or how to improve your security posture.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
+    # Load full data for detailed responses
     assessments = get_all_assessments()
     if not assessments:
-        st.warning("No assessments found. Complete a New Assessment first, then come back here.")
-        return
+        return "No assessment data found. Please complete an assessment first."
 
-    # Assessment selector
-    options = {
-        f"ID {a['id']} — {a['org_name']} ({a['created_at'][:10]})": a["id"]
-        for a in assessments
-    }
-    chosen = st.selectbox("Assessment context:", list(options.keys()))
-    context, row = get_context(options[chosen])
+    latest    = assessments[0]
+    questions = get_questions()
+
+    try:
+        import json
+        answers      = json.loads(latest.get("answers_json", "{}"))
+        domain_scores= compute_domain_scores(answers, questions)
+        gaps         = identify_gaps(answers, questions, threshold=3)
+    except Exception:
+        domain_scores = {}
+        gaps          = []
+
+    score  = latest.get("maturity_score", 0)
+    risk   = latest.get("risk_level", "Unknown")
+    org    = latest.get("org_name", "Organisation")
+
+    crit   = [g for g in gaps if g.get("severity") == "Critical"]
+    high   = [g for g in gaps if g.get("severity") == "High"]
+    med    = [g for g in gaps if g.get("severity") == "Medium"]
+
+    # ── TOP 3 / IMMEDIATE FIXES ───────────────────────────────
+    if any(x in q for x in ["top 3", "fix immediately", "fix first",
+                              "most important", "priority", "urgent",
+                              "immediately", "critical"]):
+        top_gaps = (crit + high)[:3]
+        if not top_gaps:
+            top_gaps = gaps[:3]
+
+        resp = f"## 🚨 Top 3 Immediate Actions for {org}\n\n"
+        resp += f"Based on your **{risk} Risk** assessment "
+        resp += f"(score: **{score:.2f}/5.00**), "
+        resp += f"here are your 3 highest priority fixes:\n\n"
+
+        for i, g in enumerate(top_gaps, 1):
+            sev   = g.get("severity", "")
+            emoji = "🔴" if sev == "Critical" else "🟠" if sev == "High" else "🟡"
+            resp += f"### {i}. {emoji} {g.get('question', '')}\n"
+            resp += f"**Severity:** {sev} | "
+            resp += f"**NIST:** `{g.get('nist_ref','')}` | "
+            resp += f"**ISO:** `{g.get('iso_ref','')}`\n\n"
+            resp += f"**Why it matters:** This control scored below the "
+            resp += f"Defined threshold (3.0), meaning it is either not "
+            resp += f"implemented or inconsistently applied — leaving your "
+            resp += f"organisation exposed.\n\n"
+            resp += f"**What to do:** {g.get('recommendation', 'Implement this control as a priority.')}\n\n"
+            resp += "---\n"
+
+        resp += f"\n💡 You have **{len(crit)} Critical** and "
+        resp += f"**{len(high)} High** gaps in total. "
+        resp += f"Go to the **Remediation Roadmap** page for the full 90-day plan."
+        return resp
+
+    # ── OVERALL SCORE ─────────────────────────────────────────
+    elif any(x in q for x in ["overall score", "maturity score",
+                                "my score", "total score", "what is my score"]):
+        levels = {
+            (0,1): ("Initial","No formal controls. Immediate action required."),
+            (1,2): ("Developing","Basic reactive controls only. Needs structure."),
+            (2,3): ("Defined","Documented processes but inconsistently applied."),
+            (3,4): ("Managed","Monitored and measured controls. Good posture."),
+            (4,5): ("Optimising","Continuously improving. Excellent posture."),
+        }
+        level_name, level_desc = "Unknown", ""
+        for (lo, hi), (name, desc) in levels.items():
+            if lo <= score < hi:
+                level_name, level_desc = name, desc
+                break
+
+        resp  = f"## 📊 Overall Maturity Score for {org}\n\n"
+        resp += f"**Score: {score:.2f} / 5.00**\n\n"
+        resp += f"**Maturity Level: {level_name}**\n\n"
+        resp += f"{level_desc}\n\n"
+        resp += f"**AI/ML Risk Classification: {risk}**\n\n"
+        resp += f"### Domain Breakdown:\n"
+        for d, v in domain_scores.items():
+            s = v.get("score", 0) if isinstance(v, dict) else 0
+            bar = "█" * int(s) + "░" * (5 - int(s))
+            resp += f"- **{d}:** {s:.2f}/5.00  `{bar}`\n"
+        resp += f"\n**Total Gaps:** {len(gaps)} "
+        resp += f"({len(crit)} Critical, {len(high)} High, {len(med)} Medium)"
+        return resp
+
+    # ── RISK LEVEL ────────────────────────────────────────────
+    elif any(x in q for x in ["risk level", "risk", "danger",
+                                "how safe", "how vulnerable"]):
+        resp  = f"## 🤖 AI/ML Risk Classification for {org}\n\n"
+        resp += f"**Risk Level: {risk}**\n\n"
+
+        risk_explain = {
+            "Critical": "Your organisation has severe cybersecurity gaps. "
+                        "You are highly vulnerable to attacks. "
+                        "Immediate action is required across multiple domains.",
+            "High":     "Your organisation has significant gaps that increase "
+                        "your exposure to cyber attacks. "
+                        "Priority remediation is needed within 30 days.",
+            "Medium":   "Your organisation has moderate gaps. "
+                        "Controls exist but are inconsistently applied. "
+                        "Improvement is needed within 90 days.",
+            "Low":      "Your organisation has a good security posture. "
+                        "Most controls are implemented. "
+                        "Focus on continuous improvement.",
+        }
+        resp += risk_explain.get(risk, "Risk level determined by AI/ML model.") + "\n\n"
+        resp += f"**Score: {score:.2f}/5.00** | "
+        resp += f"**Gaps: {len(gaps)}** "
+        resp += f"({len(crit)} Critical, {len(high)} High)\n\n"
+
+        if crit:
+            resp += "### 🔴 Your Most Critical Vulnerabilities:\n"
+            for g in crit[:3]:
+                resp += f"- {g.get('question','')[:80]}\n"
+        return resp
+
+    # ── WEAKEST DOMAIN ────────────────────────────────────────
+    elif any(x in q for x in ["weakest", "lowest", "worst domain",
+                                "worst area", "biggest gap"]):
+        if domain_scores:
+            sorted_d = sorted(
+                domain_scores.items(),
+                key=lambda x: x[1].get("score", 0) if isinstance(x[1], dict) else 0
+            )
+            weakest  = sorted_d[0]
+            d_name   = weakest[0]
+            d_score  = weakest[1].get("score", 0) if isinstance(weakest[1], dict) else 0
+            d_gaps   = [g for g in gaps if g.get("domain") == d_name]
+
+            resp  = f"## 📉 Weakest Domain: {d_name}\n\n"
+            resp += f"**Score: {d_score:.2f}/5.00** — "
+            resp += f"This is your lowest scoring domain.\n\n"
+            resp += f"**{len(d_gaps)} gaps found** in {d_name}.\n\n"
+            resp += f"### Top Issues in {d_name}:\n"
+            for g in d_gaps[:4]:
+                resp += f"- {g.get('question','')[:80]}\n"
+                resp += f"  → {g.get('recommendation','')[:80]}\n\n"
+            return resp
+
+    # ── SPECIFIC DOMAIN ───────────────────────────────────────
+    elif any(d.lower() in q for d in ["govern","identify","protect",
+                                        "detect","respond","recover"]):
+        target = None
+        for d in ["Govern","Identify","Protect","Detect","Respond","Recover"]:
+            if d.lower() in q:
+                target = d
+                break
+
+        if target:
+            d_info  = domain_scores.get(target, {})
+            d_score = d_info.get("score", 0) if isinstance(d_info, dict) else 0
+            d_gaps  = [g for g in gaps if g.get("domain") == target]
+
+            resp  = f"## 🔍 {target} Domain Analysis\n\n"
+            resp += f"**Score: {d_score:.2f}/5.00**\n\n"
+            resp += f"**Gaps found: {len(d_gaps)}**\n\n"
+
+            if d_gaps:
+                resp += f"### Control Gaps in {target}:\n"
+                for g in d_gaps[:6]:
+                    sev   = g.get("severity","")
+                    emoji = "🔴" if sev=="Critical" else "🟠" if sev=="High" else "🟡"
+                    resp += f"\n{emoji} **{g.get('question','')[:70]}**\n"
+                    resp += f"- NIST: `{g.get('nist_ref','')}` | "
+                    resp += f"ISO: `{g.get('iso_ref','')}`\n"
+                    resp += f"- Fix: {g.get('recommendation','')[:80]}\n"
+            else:
+                resp += f"✅ No significant gaps in {target}. Well done!\n"
+            return resp
+
+    # ── COMPLIANCE ────────────────────────────────────────────
+    elif any(x in q for x in ["gdpr","dpdp","pci","hipaa","iso 27001",
+                                "complian","regulation"]):
+        resp  = f"## ✅ Compliance Status for {org}\n\n"
+        resp += f"Based on your score of **{score:.2f}/5.00**, "
+        resp += f"here is your likely compliance posture:\n\n"
+
+        frameworks = {
+            "DPDP Act 2023":  (score >= 3.0, "data protection, breach notification, vendor management"),
+            "GDPR":           (score >= 3.5, "data encryption, breach notification within 72hrs, DPO"),
+            "PCI-DSS v4.0":   (score >= 3.0, "encryption, access control, vulnerability scanning"),
+            "HIPAA":          (score >= 3.0, "access control, audit logs, data encryption"),
+            "ISO 27001:2022": (score >= 3.5, "ISMS, risk assessment, all Annex A controls"),
+        }
+        for fw, (ok, reqs) in frameworks.items():
+            status = "✅ Likely Compliant" if ok else "❌ Gaps Detected"
+            resp  += f"**{fw}:** {status}\n"
+            resp  += f"Key requirements: {reqs}\n\n"
+
+        resp += f"\n💡 Go to the **Compliance Checker** page for "
+        resp += f"detailed requirement-by-requirement results."
+        return resp
+
+    # ── ENCRYPTION / MFA / SIEM / IRP specific ───────────────
+    elif any(x in q for x in ["mfa","multi-factor","authentication"]):
+        mfa_gaps = [g for g in gaps if "authentication" in g.get("question","").lower()
+                    or "mfa" in g.get("question","").lower()
+                    or "PR.AA-03" in g.get("nist_ref","")]
+        resp = f"## 🔐 MFA Status for {org}\n\n"
+        if mfa_gaps:
+            resp += "❌ **MFA gaps detected:**\n\n"
+            for g in mfa_gaps:
+                resp += f"- {g.get('question','')}\n"
+                resp += f"  Fix: Enable MFA on all privileged accounts, "
+                resp += f"email and VPN immediately.\n\n"
+        else:
+            resp += "✅ No MFA gaps detected. MFA appears to be implemented.\n"
+        return resp
+
+    elif any(x in q for x in ["siem","logging","log","monitor"]):
+        siem_gaps = [g for g in gaps if "siem" in g.get("question","").lower()
+                     or "log" in g.get("question","").lower()
+                     or "monitor" in g.get("question","").lower()]
+        resp = f"## 📡 SIEM and Monitoring Status for {org}\n\n"
+        if siem_gaps:
+            resp += "❌ **Monitoring gaps detected:**\n\n"
+            for g in siem_gaps[:4]:
+                resp += f"- {g.get('question','')}\n"
+                resp += f"  Fix: {g.get('recommendation','Deploy SIEM solution.')}\n\n"
+            resp += "\n💡 Recommended tools: Wazuh (free), Splunk, Microsoft Sentinel."
+        else:
+            resp += "✅ Monitoring controls appear to be in place.\n"
+        return resp
+
+    elif any(x in q for x in ["incident response","irp","incident plan"]):
+        irp_gaps = [g for g in gaps if "incident" in g.get("question","").lower()]
+        resp = f"## 🚨 Incident Response Status for {org}\n\n"
+        if irp_gaps:
+            resp += "❌ **Incident response gaps:**\n\n"
+            for g in irp_gaps[:3]:
+                resp += f"- {g.get('question','')}\n"
+                resp += f"  Fix: {g.get('recommendation','Create an IRP.')}\n\n"
+        else:
+            resp += "✅ Incident response controls appear to be in place.\n"
+        return resp
+
+    elif any(x in q for x in ["encrypt","tls","aes","data protection"]):
+        enc_gaps = [g for g in gaps if "encrypt" in g.get("question","").lower()
+                    or "tls" in g.get("question","").lower()]
+        resp = f"## 🔒 Encryption Status for {org}\n\n"
+        if enc_gaps:
+            resp += "❌ **Encryption gaps detected:**\n\n"
+            for g in enc_gaps[:4]:
+                resp += f"- {g.get('question','')}\n"
+                resp += f"  Fix: {g.get('recommendation','Implement AES-256 and TLS 1.2+.')}\n\n"
+        else:
+            resp += "✅ Encryption controls appear to be in place.\n"
+        return resp
+
+    # ── GAP SUMMARY ───────────────────────────────────────────
+    elif any(x in q for x in ["gap","gaps","weakness","weaknesses",
+                                "failing","failed","missing"]):
+        resp  = f"## 🔍 Gap Analysis for {org}\n\n"
+        resp += f"**Total Gaps: {len(gaps)}**\n"
+        resp += f"- 🔴 Critical: {len(crit)}\n"
+        resp += f"- 🟠 High: {len(high)}\n"
+        resp += f"- 🟡 Medium: {len(med)}\n\n"
+
+        if crit:
+            resp += "### 🔴 Critical Gaps (Fix Immediately):\n"
+            for g in crit[:4]:
+                resp += f"- **{g.get('question','')[:70]}**\n"
+                resp += f"  `{g.get('nist_ref','')}` → "
+                resp += f"{g.get('recommendation','')[:60]}\n\n"
+
+        if high:
+            resp += "### 🟠 High Gaps (Fix Within 30 Days):\n"
+            for g in high[:4]:
+                resp += f"- {g.get('question','')[:70]}\n"
+                resp += f"  → {g.get('recommendation','')[:60]}\n\n"
+
+        return resp
+
+    # ── RANSOMWARE / ATTACK ───────────────────────────────────
+    elif any(x in q for x in ["ransomware","attack","vulnerable",
+                                "hacked","breach"]):
+        detect_score  = domain_scores.get("Detect",  {}).get("score", 0)
+        respond_score = domain_scores.get("Respond", {}).get("score", 0)
+        recover_score = domain_scores.get("Recover", {}).get("score", 0)
+
+        avg    = (detect_score + respond_score + recover_score) / 3
+        vuln   = "HIGH" if avg < 2 else "MEDIUM" if avg < 3 else "LOW"
+
+        resp  = f"## 💥 Ransomware Vulnerability for {org}\n\n"
+        resp += f"**Vulnerability Level: {vuln}**\n\n"
+        resp += f"Key domain scores for ransomware resistance:\n"
+        resp += f"- Detect: {detect_score:.2f}/5.00\n"
+        resp += f"- Respond: {respond_score:.2f}/5.00\n"
+        resp += f"- Recover: {recover_score:.2f}/5.00\n\n"
+        resp += "**To reduce ransomware risk:**\n"
+        resp += "- Deploy EDR on all endpoints\n"
+        resp += "- Enable SIEM for early detection\n"
+        resp += "- Test backups monthly\n"
+        resp += "- Run tabletop ransomware simulation exercise\n"
+        resp += "- Define and test your incident response plan\n"
+        return resp
+
+    # ── DEFAULT — still gives useful answer ───────────────────
+    else:
+        resp  = f"## 💡 Security Advisor — {org}\n\n"
+        resp += f"**Current Status:** Score {score:.2f}/5.00 | "
+        resp += f"Risk: {risk} | Gaps: {len(gaps)}\n\n"
+        resp += "I can help you with:\n\n"
+        resp += "- **Top 3 things to fix** — ask: *What are my top 3 priorities?*\n"
+        resp += "- **Domain analysis** — ask: *What are my Protect domain gaps?*\n"
+        resp += "- **Risk explanation** — ask: *Why is my risk level high?*\n"
+        resp += "- **Compliance** — ask: *Am I GDPR compliant?*\n"
+        resp += "- **Specific controls** — ask: *Is MFA implemented?*\n"
+        resp += "- **Attack risk** — ask: *How vulnerable am I to ransomware?*\n\n"
+        resp += f"You have **{len(crit)} Critical** and **{len(high)} High** "
+        resp += f"gaps to address. What would you like to know?"
+        return resp
+
+
+def render():
+    st.title("🤖 AI Security Advisor")
+    st.markdown(
+        "Ask me anything about your cybersecurity assessment results, "
+        "gaps, risks and recommendations."
+    )
+
+    # Load context
+    context, latest = get_assessment_context()
 
     if not context:
-        st.error("Could not load assessment data.")
+        st.warning(
+            "⚠️ No assessment data found. "
+            "Please complete an assessment first."
+        )
         return
 
-    # Context summary
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Organisation", row["org_name"])
-    col2.metric("Overall Score", f"{row['maturity_score']:.2f}/5.00")
-    col3.metric("Risk Level", row["risk_level"])
+    # Show quick stats
+    if latest:
+        score = latest.get("maturity_score", 0)
+        risk  = latest.get("risk_level", "Unknown")
+        org   = latest.get("org_name", "Organisation")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Organisation", org)
+        c2.metric("Overall Score", f"{score:.2f}/5.00")
+        c3.metric("Risk Level", risk)
+        st.markdown("---")
+
+    # Quick question buttons
+    st.markdown("**💬 Quick Questions — click to ask:**")
+    qcols = st.columns(3)
+    quick_questions = [
+        "What are my top 3 priorities?",
+        "What is my overall score?",
+        "What are my critical gaps?",
+        "Am I GDPR compliant?",
+        "Which domain is weakest?",
+        "How vulnerable am I to ransomware?",
+    ]
+    for i, qq in enumerate(quick_questions):
+        with qcols[i % 3]:
+            if st.button(qq, key=f"qq_{i}", use_container_width=True):
+                st.session_state["chatbot_input"] = qq
 
     st.markdown("---")
 
     # Chat history
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-        # Welcome message
-        st.session_state.chat_history.append({
-            "role": "assistant",
-            "content": (
-                f"Hello! I've loaded the assessment for **{row['org_name']}**. "
-                f"Your overall maturity score is **{row['maturity_score']:.2f}/5.00** "
-                f"with a **{row['risk_level']}** risk level. "
-                f"How can I help you understand and improve your cybersecurity posture?"
-            )
-        })
-
-    # Quick question buttons
-    st.markdown("**Quick questions:**")
-    qcols = st.columns(4)
-    quick = [
-        "What are my biggest gaps?",
-        "How do I improve my score?",
-        "Explain my risk level",
-        "What is NIST CSF 2.0?",
-    ]
-    for i, q in enumerate(quick):
-        if qcols[i].button(q, key=f"quick_{i}", use_container_width=True):
-            st.session_state.chat_history.append({"role": "user", "content": q})
-            response = get_ai_response(context, q, st.session_state.chat_history)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
-
-    st.markdown("---")
+        st.session_state["chat_history"] = []
 
     # Display chat history
-    for msg in st.session_state.chat_history:
+    for msg in st.session_state["chat_history"]:
         if msg["role"] == "user":
-            st.markdown(f'<div class="chat-label-user">You</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="chat-msg-user">{msg["content"]}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="background:#1e3a5f;border-radius:10px;
+                        padding:10px 14px;margin:8px 0;text-align:right;">
+                <span style="color:#93c5fd;">👤 {msg['content']}</span>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.markdown(f'<div class="chat-label-bot">🤖 AI Advisor</div>',
-                        unsafe_allow_html=True)
-            st.markdown(f'<div class="chat-msg-bot">{msg["content"]}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="background:#1e293b;border-radius:10px;
+                        padding:10px 14px;margin:8px 0;">
+                <span style="color:#e2e8f0;">{msg['content']}</span>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown(msg["content"])
 
-    # Chat input
-    user_input = st.chat_input("Ask me about your security posture, gaps, NIST controls...")
-    if user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        response = get_ai_response(context, user_input, st.session_state.chat_history)
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
-        st.rerun()
+    # Input box
+    default_val = st.session_state.pop("chatbot_input", "")
+    user_input  = st.text_input(
+        "Ask a security question:",
+        value=default_val,
+        placeholder="e.g. What are my top 3 priorities?",
+        key="chat_input_box",
+    )
 
-    if st.button("🗑️ Clear Chat", use_container_width=False):
-        st.session_state.chat_history = []
+    col_send, col_clear = st.columns([1, 4])
+    with col_send:
+        send = st.button("Send ➤", type="primary",
+                         use_container_width=True)
+    with col_clear:
+        if st.button("Clear Chat", use_container_width=True):
+            st.session_state["chat_history"] = []
+            st.rerun()
+
+    if send and user_input.strip():
+        # Add user message
+        st.session_state["chat_history"].append({
+            "role": "user",
+            "content": user_input.strip(),
+        })
+
+        # Generate response
+        with st.spinner("Analysing your assessment data..."):
+            response = get_ai_response(user_input.strip(), context)
+
+        # Add assistant response
+        st.session_state["chat_history"].append({
+            "role": "assistant",
+            "content": response,
+        })
+
         st.rerun()

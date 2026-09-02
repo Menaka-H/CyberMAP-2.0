@@ -1,4 +1,4 @@
-# utils/report_gen.py — Fixed PDF generator
+# utils/report_gen.py — Fixed PDF generator (CyberMAP 2.0 enhanced)
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -18,6 +18,7 @@ SLATE  = colors.HexColor("#475569")
 RED    = colors.HexColor("#ef4444")
 AMBER  = colors.HexColor("#f59e0b")
 GREEN  = colors.HexColor("#22c55e")
+PURPLE = colors.HexColor("#8b5cf6")
 LGRAY  = colors.HexColor("#F3F4F6")
 WHITE  = colors.white
 
@@ -36,7 +37,21 @@ def get_severity_colour(sev):
         "Medium":   colors.HexColor("#eab308"),
     }.get(sev, SLATE)
 
-def generate_pdf_report(assessment_data, domain_scores):
+def generate_pdf_report(assessment_data, domain_scores,
+                         evidence_summary=None, shap_explanation=None,
+                         priority_gaps=None):
+    """
+    assessment_data   — unchanged from before (org_name, assessor, etc.)
+    domain_scores     — unchanged from before
+    evidence_summary  — optional dict: {"total_eligible": int,
+                         "with_evidence": int, "coverage_pct": float}
+    shap_explanation  — optional dict from utils.ml_model.explain_prediction()
+    priority_gaps     — optional list of gaps already run through
+                         utils.prioritization.prioritize_gaps() (has
+                         'priority_score' on each gap)
+    All three new parameters are optional — if not passed, the PDF
+    generates exactly as before with no CyberMAP 2.0 sections added.
+    """
     buffer = BytesIO()
     doc    = SimpleDocTemplate(
         buffer, pagesize=A4,
@@ -193,7 +208,7 @@ def generate_pdf_report(assessment_data, domain_scores):
             "Optimising"
         )
         cov = f"{(sc/5.0)*100:.1f}%"
-        q   = str(info.get("question_count", 0))
+        q   = str(info.get("count", info.get("question_count", 0)))
         domain_rows.append([
             Paragraph(str(domain), body_style),
             Paragraph(f"{sc:.2f}/5.00", center_style),
@@ -221,6 +236,69 @@ def generate_pdf_report(assessment_data, domain_scores):
     ]))
     story.append(dom_table)
     story.append(Spacer(1, 20))
+
+    # ── EVIDENCE COVERAGE (CyberMAP 2.0) ────────────────────────────────
+    if evidence_summary:
+        story.append(Paragraph("Evidence Coverage", h1_style))
+        story.append(HRFlowable(
+            width="100%", thickness=2,
+            color=ORANGE, spaceAfter=10,
+        ))
+        total_e   = evidence_summary.get("total_eligible", 0)
+        with_e    = evidence_summary.get("with_evidence", 0)
+        pct_e     = evidence_summary.get("coverage_pct", 0)
+
+        story.append(Paragraph(
+            f"Of the {total_e} technical, evidence-eligible controls in "
+            f"this assessment, <b>{with_e}</b> had supporting evidence "
+            f"(screenshots, configuration exports, or automated scanner "
+            f"reports) attached at the time of scoring — an evidence "
+            f"coverage of <b>{pct_e}%</b>. The remaining evidence-eligible "
+            f"controls, and all governance/process controls, were "
+            f"self-reported without attached proof.",
+            body_style,
+        ))
+        story.append(Spacer(1, 16))
+
+    # ── AI EXPLANATION (CyberMAP 2.0, SHAP) ─────────────────────────────
+    if shap_explanation:
+        story.append(Paragraph("AI Risk Classification — Explanation", h1_style))
+        story.append(HRFlowable(
+            width="100%", thickness=2,
+            color=ORANGE, spaceAfter=10,
+        ))
+        story.append(Paragraph(
+            shap_explanation.get("explanation_text", ""),
+            body_style,
+        ))
+        story.append(Spacer(1, 8))
+
+        contrib = shap_explanation.get("domain_contributions", {})
+        if contrib:
+            contrib_header = [
+                Paragraph("<b>Domain</b>", center_style),
+                Paragraph("<b>Contribution to Prediction</b>", center_style),
+            ]
+            contrib_rows = [contrib_header]
+            for dom, val in contrib.items():
+                sign = "+" if val >= 0 else ""
+                contrib_rows.append([
+                    Paragraph(dom, body_style),
+                    Paragraph(f"{sign}{val:.3f}", center_style),
+                ])
+            contrib_table = Table(contrib_rows, colWidths=[2.5*inch, 2.5*inch])
+            contrib_table.setStyle(TableStyle([
+                ("BACKGROUND",  (0,0), (-1,0), PURPLE),
+                ("TEXTCOLOR",   (0,0), (-1,0), WHITE),
+                ("FONTNAME",    (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE",    (0,0), (-1,-1), 9),
+                ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE, LGRAY]),
+                ("GRID",        (0,0), (-1,-1), 0.5, colors.HexColor("#e2e8f0")),
+                ("TOPPADDING",  (0,0), (-1,-1), 5),
+                ("BOTTOMPADDING",(0,0),(-1,-1), 5),
+            ]))
+            story.append(contrib_table)
+        story.append(Spacer(1, 16))
 
     # ── GAP ANALYSIS ──────────────────────────────────────────────────
     story.append(Paragraph("Gap Analysis", h1_style))
@@ -305,6 +383,54 @@ def generate_pdf_report(assessment_data, domain_scores):
 
     story.append(Spacer(1, 20))
 
+    # ── PRIORITY-RANKED TOP FIXES (CyberMAP 2.0) ────────────────────────
+    if priority_gaps:
+        story.append(Paragraph("Priority-Ranked Remediation", h1_style))
+        story.append(HRFlowable(
+            width="100%", thickness=2,
+            color=ORANGE, spaceAfter=10,
+        ))
+        story.append(Paragraph(
+            "Gaps below are ranked using Priority Score = (Severity × "
+            "Business Impact × Exploitability) ÷ Remediation Effort, "
+            "which surfaces high-value, low-effort fixes ahead of gaps "
+            "that are severe but costly or lower-impact to remediate.",
+            body_style,
+        ))
+        story.append(Spacer(1, 8))
+
+        top_priority = sorted(
+            priority_gaps, key=lambda g: g.get("priority_score", 0), reverse=True
+        )[:5]
+
+        pr_header = [
+            Paragraph("<b>Rank</b>", center_style),
+            Paragraph("<b>Priority Score</b>", center_style),
+            Paragraph("<b>Domain / Control</b>", center_style),
+            Paragraph("<b>Recommendation</b>", center_style),
+        ]
+        pr_rows = [pr_header]
+        for i, g in enumerate(top_priority, 1):
+            pr_rows.append([
+                Paragraph(str(i), center_style),
+                Paragraph(str(g.get("priority_score", "")), center_style),
+                Paragraph(f"{g.get('domain','')} — {g.get('subdomain','')}", body_style),
+                Paragraph(str(g.get("recommendation", ""))[:70], body_style),
+            ])
+        pr_table = Table(pr_rows, colWidths=[0.5*inch, 1.0*inch, 1.5*inch, 2.0*inch])
+        pr_table.setStyle(TableStyle([
+            ("BACKGROUND",   (0,0), (-1,0), NAVY),
+            ("TEXTCOLOR",    (0,0), (-1,0), WHITE),
+            ("FONTNAME",     (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",     (0,0), (-1,-1), 8),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE, LGRAY]),
+            ("GRID",         (0,0), (-1,-1), 0.5, colors.HexColor("#e2e8f0")),
+            ("TOPPADDING",   (0,0), (-1,-1), 5),
+            ("BOTTOMPADDING",(0,0), (-1,-1), 5),
+        ]))
+        story.append(pr_table)
+        story.append(Spacer(1, 20))
+
     # ── RECOMMENDATIONS ───────────────────────────────────────────────
     story.append(Paragraph("Top Recommendations", h1_style))
     story.append(HRFlowable(
@@ -333,7 +459,7 @@ def generate_pdf_report(assessment_data, domain_scores):
         color=SLATE, spaceAfter=6,
     ))
     story.append(Paragraph(
-        f"Generated by CyberMAP on {date_str}  |  "
+        f"Generated by CyberMAP 2.0 on {date_str}  |  "
         f"NIST CSF 2.0 + ISO/IEC 27001:2022  |  "
         f"M.Tech Cybersecurity Capstone — RACE, REVA University",
         ParagraphStyle("footer", parent=center_style,

@@ -1061,3 +1061,101 @@ RECOMMENDATIONS = {
         "Design critical services with redundancy to eliminate single points of failure.",
     ],
 }
+# ── SUBDOMAIN-LEVEL RECOMMENDATIONS (CyberMAP 2.0) ────────────────────────────
+# Keyed by (domain, subdomain) so every distinct subdomain gets a
+# genuinely relevant recommendation instead of falling back to one
+# generic domain-level text.
+SUBDOMAIN_RECOMMENDATIONS = {
+    ("Govern", "Policy"):
+        "Develop, approve and communicate a documented cybersecurity policy — "
+        "including mobile device and remote work provisions — reviewed at least annually.",
+    ("Govern", "Roles and Responsibilities"):
+        "Formally assign a CISO or security lead, document RACI-style responsibilities, "
+        "and include security duties in employee job descriptions.",
+    ("Govern", "Risk Strategy"):
+        "Establish a leadership-approved risk tolerance statement and integrate "
+        "cybersecurity risk into the enterprise risk management framework.",
+    ("Govern", "Compliance"):
+        "Maintain a compliance register tracking legal, regulatory and licensing "
+        "obligations, with internal cybersecurity audits conducted annually.",
+    ("Govern", "Supply Chain"):
+        "Implement a vendor risk assessment and secure offboarding process covering "
+        "onboarding, annual contract review and clean contract termination.",
+    ("Govern", "Awareness and Training"):
+        "Make security awareness training and phishing simulations mandatory for "
+        "all staff annually, with completion tracked and reported to management.",
+    ("Govern", "Oversight"):
+        "Establish a formal management review cadence (at least annually) with "
+        "cybersecurity KPIs and budget reported to senior leadership.",
+
+    ("Identify", "Asset Management"):
+        "Deploy an automated asset discovery tool and maintain a classified, "
+        "owner-assigned inventory reviewed at least quarterly.",
+    ("Identify", "Risk Assessment"):
+        "Conduct formal risk assessments annually using ISO 27005 or NIST SP 800-30, "
+        "maintaining a live risk register with treatment plans and owners.",
+    ("Identify", "Business Environment"):
+        "Document critical business processes and their dependencies, and conduct "
+        "business impact analyses for all critical systems.",
+    ("Identify", "Vulnerability Management"):
+        "Implement continuous vulnerability scanning with a tracked remediation "
+        "workflow from discovery through to closure.",
+    ("Identify", "Improvement"):
+        "Use security metrics, penetration test findings and lessons from past "
+        "incidents to drive a formal continuous improvement process.",
+
+    ("Protect", "Identity Management"):
+        "Enforce MFA and least privilege for all accounts, with a formal "
+        "provisioning/deprovisioning process and a privileged access management solution.",
+    ("Protect", "Data Security"):
+        "Encrypt sensitive data at rest (AES-256) and in transit (TLS 1.2+), with "
+        "managed encryption keys and regularly tested backups.",
+    ("Protect", "Platform Security"):
+        "Apply hardened security configuration baselines, patch critical "
+        "vulnerabilities within 30 days, and enforce secure software development practices.",
+    ("Protect", "Endpoint Security"):
+        "Deploy centrally managed EDR or antivirus and disk encryption on all "
+        "endpoints, with MDM enforced for corporate mobile devices.",
+    ("Protect", "Network Security"):
+        "Segment networks, isolate wireless from the corporate network, and require "
+        "VPN with strong authentication for all remote access.",
+    ("Protect", "Physical Security"):
+        "Restrict and log physical access to server rooms, enforce clean desk "
+        "practices, and maintain environmental controls such as fire suppression.",
+
+    ("Detect", "Continuous Monitoring"):
+        "Deploy a SIEM with centralised logging (minimum 90-day retention) and "
+        "continuous, ideally 24x7, security monitoring coverage.",
+    ("Detect", "Event Analysis"):
+        "Correlate and triage security alerts, conduct regular vulnerability scans "
+        "and penetration tests, and incorporate threat intelligence into detection.",
+
+    ("Respond", "Incident Management"):
+        "Establish a documented, tested Incident Response Plan with a dedicated "
+        "team, defined severity tiers and clear escalation thresholds.",
+    ("Respond", "Incident Analysis"):
+        "Perform root cause analysis and preserve forensic evidence for every "
+        "significant incident, tracked in a case management system.",
+    ("Respond", "Communications"):
+        "Define breach notification procedures aligned with DPDP/GDPR requirements, "
+        "including customer, regulator and PR communication plans.",
+    ("Respond", "Mitigation"):
+        "Build playbooks to contain compromised systems, revoke credentials and "
+        "eradicate threats within defined response time targets.",
+    ("Respond", "Improvements"):
+        "Conduct post-incident reviews within two weeks of resolution and track "
+        "resulting improvement actions to completion.",
+
+    ("Recover", "Incident Recovery"):
+        "Document and test a Business Continuity and Disaster Recovery Plan with "
+        "validated RTOs/RPOs and quarterly backup restoration tests.",
+    ("Recover", "Improvements"):
+        "Use recovery test results and post-incident reviews to close gaps, "
+        "tracked with clear owners and deadlines.",
+    ("Recover", "Communications"):
+        "Maintain a stakeholder communication plan for recovery events, including "
+        "regulator notification procedures for extended outages.",
+    ("Recover", "Resilience"):
+        "Design redundancy into critical services — failover connectivity, UPS or "
+        "generator backup, multi-availability-zone deployment — and validate with resilience testing.",
+}
