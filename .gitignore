@@ -10,3 +10,4 @@ __pycache__/
 CyberMAP_ScanReport_*.json
 incoming_scans/*.json
 scheduled_scan_log.txt
+Microsoft/
